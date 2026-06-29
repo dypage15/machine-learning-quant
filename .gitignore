@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+bars.json
+last_run.txt
+last_predictions.json
+*.db
+*.log
+.DS_Store

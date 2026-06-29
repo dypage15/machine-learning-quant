@@ -1,0 +1,248 @@
+// =============================================================================
+// PCA Regime Signal — Based on Infantino & Itzhaki (MIT, 2010)
+// "Developing High-Frequency Equities Trading Models"
+//
+// CONCEPT TRANSLATION:
+//   True PCA on 50 stocks → approximated with 5 sector ETFs as PC proxies
+//   PC1 = SPY  (market / first principal component)
+//   PC2 = XLK  (technology factor)
+//   PC3 = XLF  (financials factor)
+//   PC4 = XLE  (energy factor)
+//   PC5 = XLV  (healthcare / defensive factor)
+//
+//   Rolling OLS betas computed as: β = corr(y,x) * σ_y / σ_x
+//
+//   The regime switching signal (E_H) is the most faithful translation.
+//   It measures the Euclidean norm of changes in cross-sectional volatility
+//   of the dimensionally-reduced returns. When E_H is accelerating, the
+//   paper shows mean-reversion breaks down and momentum dominates.
+//
+// BEST TIMEFRAME: 1–5 minute charts on liquid large-cap equities
+// =============================================================================
+
+//@version=5
+indicator("PCA Regime Signal [Infantino-Itzhaki]", shorttitle="PCA-Regime",
+          overlay=false, max_bars_back=500)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+
+grp1 = "Model Parameters"
+H          = input.int(30,  "H — Lookback/Forward Window (bars)", minval=5, maxval=200, group=grp1,
+              tooltip="In the paper this was ~30 seconds. On 1-min bars, 30 = 30 minutes.")
+reg_len    = input.int(100, "Regression Window (bars)",           minval=20, maxval=500, group=grp1,
+              tooltip="Rolling window for estimating OLS betas. Longer = more stable, slower to adapt.")
+
+grp2 = "PC Proxies (Sector ETFs)"
+pc1_sym = input.symbol("SPY", "PC1 — Market Factor",      group=grp2)
+pc2_sym = input.symbol("XLK", "PC2 — Tech Factor",        group=grp2)
+pc3_sym = input.symbol("XLF", "PC3 — Financials Factor",  group=grp2)
+pc4_sym = input.symbol("XLE", "PC4 — Energy Factor",      group=grp2)
+pc5_sym = input.symbol("XLV", "PC5 — Defensive Factor",   group=grp2)
+
+grp3 = "Display"
+show_sigma   = input.bool(true,  "Show σ_D (Cross-Sectional Vol)",   group=grp3)
+show_EH      = input.bool(true,  "Show E_H (Euclidean Distance)",    group=grp3)
+show_disloc  = input.bool(true,  "Show Dislocation from Fair Value", group=grp3)
+show_signal  = input.bool(true,  "Show Trade Signal (+1 / -1)",      group=grp3)
+
+// ─── LOG RETURNS ─────────────────────────────────────────────────────────────
+// Paper section 2.1: log returns used for time-additivity and normality.
+// log(1+r) ≈ r for small r, and cumulative log returns = log(Pn/P0).
+
+lr(src) =>
+    math.log(src / src[1])
+
+r0 = lr(close)  // target symbol
+
+c1 = request.security(pc1_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c2 = request.security(pc2_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c3 = request.security(pc3_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c4 = request.security(pc4_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c5 = request.security(pc5_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+
+r1 = lr(c1)
+r2 = lr(c2)
+r3 = lr(c3)
+r4 = lr(c4)
+r5 = lr(c5)
+
+// ─── ROLLING OLS BETAS ───────────────────────────────────────────────────────
+// Paper section 2.4: OLS regression of cumulative stock returns on cumulative
+// PC returns. Here we approximate with rolling single-factor betas.
+// β = corr(y, x) * σ_y / σ_x
+//
+// Each β tells us how much this stock loads on that sector factor.
+
+rolling_beta(y, x, len) =>
+    corr = ta.correlation(y, x, len)
+    sd_y = ta.stdev(y, len)
+    sd_x = ta.stdev(x, len)
+    sd_x != 0 ? corr * sd_y / sd_x : 0.0
+
+b1 = rolling_beta(r0, r1, reg_len)
+b2 = rolling_beta(r0, r2, reg_len)
+b3 = rolling_beta(r0, r3, reg_len)
+b4 = rolling_beta(r0, r4, reg_len)
+b5 = rolling_beta(r0, r5, reg_len)
+
+// ─── DIMENSIONALLY REDUCED RETURNS (D) ───────────────────────────────────────
+// Paper eq: D = [Φᵀ * Yᵀ]ᵀ
+// Here approximated as: d_j = β_j * r_j
+// This projects the PC return through the stock's loading on that factor.
+
+d1 = b1 * r1
+d2 = b2 * r2
+d3 = b3 * r3
+d4 = b4 * r4
+d5 = b5 * r5
+
+// ─── CROSS-SECTIONAL VOLATILITY σ_D ──────────────────────────────────────────
+// Paper section 3.1, eq: σ_D(t) = sqrt( Σ(d_tj - d̄_t)² / (k-1) )
+// This measures how spread out the factor contributions are at time t.
+// A spike in σ_D = the factors are dislocating from each other.
+
+k = 5.0
+d_mean = (d1 + d2 + d3 + d4 + d5) / k
+
+sigma_D = math.sqrt(
+  (math.pow(d1 - d_mean, 2) +
+   math.pow(d2 - d_mean, 2) +
+   math.pow(d3 - d_mean, 2) +
+   math.pow(d4 - d_mean, 2) +
+   math.pow(d5 - d_mean, 2)) / (k - 1))
+
+// ─── ψ — RATE OF CHANGE OF σ_D ───────────────────────────────────────────────
+// Paper section 3.1: ψ = dσ_D/dt
+// The paper found it's not σ_D itself but its CHANGES that predict regime.
+
+psi = sigma_D - sigma_D[1]
+
+// ─── E_H — EUCLIDEAN DISTANCE (REGIME SIGNAL) ────────────────────────────────
+// Paper section 3.1, eq: E_H(t) = sqrt( Σᵢ [ψ(t-i)]² )  for i = 0..H
+//
+// This is the L2 norm of ψ over the window H.
+// HIGH E_H → lots of violent σ_D movement → MOMENTUM regime
+// LOW E_H  → σ_D is stable → MEAN REVERSION regime
+
+e_sum = 0.0
+for i = 0 to H - 1
+    e_sum := e_sum + math.pow(nz(psi[i]), 2)
+E_H = math.sqrt(e_sum)
+
+// ─── REGIME IDENTIFICATION ────────────────────────────────────────────────────
+// Paper section 3.1: if E_H(t) > E_H(t-1) → momentum accelerating → momentum regime
+// Paper showed consistent negative correlation between E_H(t-1) and ρ(t)
+
+momentum_regime = E_H > E_H[1]
+
+// ─── PREDICTED CUMULATIVE RETURN (FAIR VALUE SIGNAL) ─────────────────────────
+// Paper section 2.4: S = D̂_t * B
+// Predicted H-period return = betas × cumulative H-period PC returns
+
+cum_d1 = math.sum(d1, H)
+cum_d2 = math.sum(d2, H)
+cum_d3 = math.sum(d3, H)
+cum_d4 = math.sum(d4, H)
+cum_d5 = math.sum(d5, H)
+
+// Predicted cumulative return over next H bars
+predicted_cum_ret = b1 * cum_d1 + b2 * cum_d2 + b3 * cum_d3 + b4 * cum_d4 + b5 * cum_d5
+
+// Actual cumulative log return over last H bars
+actual_cum_ret = math.sum(r0, H)
+
+// ─── DISLOCATION (MISPRICING SIGNAL) ─────────────────────────────────────────
+// How far has actual return diverged from the model's predicted return?
+// Positive dislocation = stock has run ABOVE fair value → mean reversion says sell
+// Negative dislocation = stock is BELOW fair value → mean reversion says buy
+
+dislocation = actual_cum_ret - predicted_cum_ret
+
+// ─── TRADE SIGNAL ────────────────────────────────────────────────────────────
+// Paper section 2.4 & 3.1:
+//   Mean reversion regime: trade AGAINST dislocation (buy losers, sell winners)
+//   Momentum regime:       trade WITH dislocation (buy winners, sell losers)
+//
+// Signal: +1 = long bias, -1 = short bias, 0 = flat
+
+raw_signal = dislocation > 0 ? -1 : 1        // mean reversion direction
+trade_signal = momentum_regime ? -raw_signal : raw_signal  // flip on momentum
+
+// ─── SIGNAL STRENGTH FILTER ───────────────────────────────────────────────────
+// Optional: only act when dislocation exceeds 1 std dev (avoid noise)
+disloc_stdev  = ta.stdev(dislocation, reg_len)
+signal_strong = math.abs(dislocation) > disloc_stdev
+filtered_signal = signal_strong ? trade_signal : 0
+
+// ─── PLOTS ───────────────────────────────────────────────────────────────────
+
+// Regime background
+bgcolor(momentum_regime ? color.new(color.red, 88) : color.new(color.teal, 88),
+        title="Regime (Red=Momentum, Teal=Mean-Reversion)")
+
+// Zero line
+hline(0, "Zero", color=color.gray, linestyle=hline.style_dashed)
+
+// σ_D — cross-sectional volatility of PC contributions
+plot(show_sigma ? sigma_D * 1000 : na,
+     title="σ_D × 1000 (PC Cross-Sectional Vol)",
+     color=color.new(color.blue, 20), linewidth=1)
+
+// E_H — the regime signal itself
+plot(show_EH ? E_H * 500 : na,
+     title="E_H × 500 (Euclidean Distance — Regime)",
+     color=color.new(color.orange, 0), linewidth=2)
+
+// Dislocation from fair value
+plot(show_disloc ? dislocation * 100 : na,
+     title="Dislocation × 100 (Actual - Predicted)",
+     color=dislocation > 0 ? color.new(color.red, 30) : color.new(color.green, 30),
+     linewidth=1, style=plot.style_area)
+
+// Trade signal (filtered)
+plot(show_signal ? filtered_signal : na,
+     title="Trade Signal (+1=Long / -1=Short / 0=Flat)",
+     color=filtered_signal > 0 ? color.lime :
+           filtered_signal < 0 ? color.red : color.gray,
+     linewidth=2, style=plot.style_stepline)
+
+// ─── LABELS ──────────────────────────────────────────────────────────────────
+
+var label regime_lbl = na
+label.delete(regime_lbl)
+regime_lbl := label.new(
+  bar_index, filtered_signal + 0.2,
+  momentum_regime ? "MOM" : "MR",
+  style=label.style_label_down,
+  color=momentum_regime ? color.red : color.teal,
+  textcolor=color.white,
+  size=size.tiny)
+
+// ─── TABLE: LIVE STATS ───────────────────────────────────────────────────────
+
+var table stats = table.new(position.top_right, 2, 8,
+  border_color=color.gray, border_width=1,
+  bgcolor=color.new(color.black, 70))
+
+if barstate.islast
+    table.cell(stats, 0, 0, "Metric",          text_color=color.gray,  text_size=size.small)
+    table.cell(stats, 1, 0, "Value",            text_color=color.gray,  text_size=size.small)
+    table.cell(stats, 0, 1, "Regime",           text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 1, momentum_regime ? "MOMENTUM" : "MEAN REV",
+               text_color=momentum_regime ? color.red : color.lime, text_size=size.small)
+    table.cell(stats, 0, 2, "σ_D",             text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 2, str.tostring(sigma_D, "#.######"), text_color=color.blue, text_size=size.small)
+    table.cell(stats, 0, 3, "E_H",             text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 3, str.tostring(E_H,     "#.######"), text_color=color.orange, text_size=size.small)
+    table.cell(stats, 0, 4, "Dislocation",     text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 4, str.tostring(dislocation * 100, "#.####") + "%",
+               text_color=dislocation > 0 ? color.red : color.lime, text_size=size.small)
+    table.cell(stats, 0, 5, "β₁ (Mkt)",        text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 5, str.tostring(b1, "#.###"), text_color=color.yellow, text_size=size.small)
+    table.cell(stats, 0, 6, "Signal",           text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 6, filtered_signal > 0 ? "▲ LONG" :
+                             filtered_signal < 0 ? "▼ SHORT" : "— FLAT",
+               text_color=filtered_signal > 0 ? color.lime :
+                           filtered_signal < 0 ? color.red : color.gray, text_size=size.small)
+    table.cell(stats, 0, 7, "H Window",         text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 7, str.tostring(H) + " bars",  text_color=color.white, text_size=size.small)

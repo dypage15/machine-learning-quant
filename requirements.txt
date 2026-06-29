@@ -1,0 +1,23 @@
+# PCA MNQ ML Intelligence System — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# ── Core numerics ──────────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=2.0
+
+# ── Machine learning ───────────────────────────────────────────────────────
+scikit-learn>=1.3           # Lorentzian fallback (SGDClassifier), preprocessing
+
+# PyTorch — too large for Streamlit Community Cloud (750MB+)
+# Install locally for full LSTM support:  pip install torch>=2.0
+# On Streamlit Cloud the system auto-uses the sklearn fallback (SGDClassifier)
+# torch>=2.0
+
+# ── Dashboard ─────────────────────────────────────────────────────────────
+streamlit>=1.32
+
+# ── Database ──────────────────────────────────────────────────────────────
+# sqlite3 is built-in — no extra package needed
+
+# ── Utilities ─────────────────────────────────────────────────────────────
+python-dateutil>=2.8

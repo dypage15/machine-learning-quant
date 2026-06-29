@@ -1,0 +1,323 @@
+// =============================================================================
+// PCA Regime Signal — MNQ Futures [OVERLAY + TP/SL]
+// Based on Infantino & Itzhaki (MIT Sloan, 2010)
+// Signals plot ON the price candles with TP/SL levels
+//
+// PROXIES (23hr futures): ES1! YM1! RTY1! ZN1! GC1!
+// =============================================================================
+
+//@version=6
+indicator("PCA-MNQ Signals [Infantino-Itzhaki]",
+          shorttitle="PCA-MNQ", overlay=true, max_bars_back=500)
+
+// Optimised params — 8,640-combo sweep, $100k capital
+// H=5  RL=20  SM=0.5  CB=2  MH=5  SL=0.5  RR=3.0  Momentum
+// Result: NetP&L=+$2,827  Trades=36  MaxDD=0.3%
+
+grp1 = "Model Parameters"
+H        = input.int(5,     "H - Lookback Window (bars)",       minval=5,  maxval=200, group=grp1)
+reg_len  = input.int(20,    "Regression Window (bars)",          minval=10, maxval=500, group=grp1)
+sig_mult = input.float(0.5, "Signal Filter (x stdev disloc)",   minval=0.0, maxval=5.0, step=0.25, group=grp1)
+force_momentum = input.bool(true, "Force Momentum Mode (always flip signal)", group=grp1)
+
+grp_trade = "Trade Controls"
+confirm_bars = input.int(2,     "Confirm Bars (before entry)",  minval=1, maxval=10,  group=grp_trade)
+min_hold     = input.int(5,     "Min Hold (bars before exit)",  minval=1, maxval=50,  group=grp_trade)
+sl_mode      = input.string("ATR", "Stop Loss Mode", options=["ATR", "Fixed Pts"],    group=grp_trade)
+sl_atr_mult  = input.float(0.5, "SL — ATR Multiplier",          minval=0.1, maxval=10.0, step=0.1, group=grp_trade)
+sl_fixed_pts = input.float(20.0,"SL — Fixed Points",            minval=1.0, group=grp_trade)
+rr_ratio     = input.float(3.0, "TP Risk:Reward Ratio",         minval=0.5, maxval=10.0, step=0.5, group=grp_trade)
+mnq_tick     = input.float(0.25,"MNQ Tick Size (pts)", minval=0.01, group=grp_trade)
+mnq_dpt      = input.float(0.50,"MNQ $ per Tick",      minval=0.01, group=grp_trade)
+
+grp2 = "Factor Proxies (Futures - 23hr session)"
+pc1_sym = input.symbol("CME_MINI:ES1!",  "PC1 - ES1!  S&P 500",   group=grp2)
+pc2_sym = input.symbol("CBOT_MINI:YM1!", "PC2 - YM1!  Dow Jones",  group=grp2)
+pc3_sym = input.symbol("CME_MINI:RTY1!", "PC3 - RTY1! Russell 2k", group=grp2)
+pc4_sym = input.symbol("CBOT:ZN1!",      "PC4 - ZN1!  10yr Bond",  group=grp2)
+pc5_sym = input.symbol("COMEX:GC1!",     "PC5 - GC1!  Gold",       group=grp2)
+
+grp3 = "Display"
+show_regime  = input.bool(true,  "Show Regime Background",    group=grp3)
+show_trades  = input.bool(true,  "Show Entry / Exit Markers", group=grp3)
+show_levels  = input.bool(true,  "Show TP / SL Lines",       group=grp3)
+show_betas   = input.bool(false, "Show Factor Betas (debug)", group=grp3)
+
+lr(src) => math.log(src / src[1])
+r0 = lr(close)
+
+c1 = request.security(pc1_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c2 = request.security(pc2_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c3 = request.security(pc3_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c4 = request.security(pc4_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+c5 = request.security(pc5_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+
+r1 = lr(c1)
+r2 = lr(c2)
+r3 = lr(c3)
+r4 = lr(c4)
+r5 = lr(c5)
+
+rolling_beta(y, x, len) =>
+    corr = ta.correlation(y, x, len)
+    sd_y = ta.stdev(y, len)
+    sd_x = ta.stdev(x, len)
+    sd_x != 0 ? corr * sd_y / sd_x : 0.0
+
+b1 = rolling_beta(r0, r1, reg_len)
+b2 = rolling_beta(r0, r2, reg_len)
+b3 = rolling_beta(r0, r3, reg_len)
+b4 = rolling_beta(r0, r4, reg_len)
+b5 = rolling_beta(r0, r5, reg_len)
+
+d1 = b1*r1
+d2 = b2*r2
+d3 = b3*r3
+d4 = b4*r4
+d5 = b5*r5
+
+k       = 5.0
+d_mean  = (d1+d2+d3+d4+d5)/k
+sigma_D = math.sqrt(
+  (math.pow(d1-d_mean,2)+math.pow(d2-d_mean,2)+
+   math.pow(d3-d_mean,2)+math.pow(d4-d_mean,2)+
+   math.pow(d5-d_mean,2))/(k-1))
+psi = sigma_D - sigma_D[1]
+
+var float e_sum = 0.0
+e_sum := 0.0
+for i = 0 to H - 1
+    e_sum := e_sum + math.pow(nz(psi[i]), 2)
+E_H = math.sqrt(e_sum)
+momentum_regime = E_H > E_H[1]
+
+cum_d1 = math.sum(d1,H)
+cum_d2 = math.sum(d2,H)
+cum_d3 = math.sum(d3,H)
+cum_d4 = math.sum(d4,H)
+cum_d5 = math.sum(d5,H)
+
+predicted_cum_ret = b1*cum_d1+b2*cum_d2+b3*cum_d3+b4*cum_d4+b5*cum_d5
+actual_cum_ret    = math.sum(r0,H)
+
+dislocation  = actual_cum_ret - predicted_cum_ret
+disloc_stdev = ta.stdev(dislocation, reg_len)
+signal_strong = sig_mult == 0.0 or math.abs(dislocation) > sig_mult * disloc_stdev
+disloc_pts   = dislocation * close
+
+raw_signal      = dislocation > 0 ? -1 : 1
+// force_momentum=true always uses momentum (flip) — matches Python DIRECTION=-1
+// force_momentum=false uses dynamic regime detection (E_H)
+use_momentum    = force_momentum or momentum_regime
+trade_signal    = use_momentum ? -raw_signal : raw_signal
+filtered_signal = signal_strong ? trade_signal : 0
+
+var int sig_streak = 0
+sig_streak := filtered_signal != 0 and filtered_signal == nz(filtered_signal[1]) ?
+              sig_streak + 1 : (filtered_signal == 0 ? 0 : 1)
+confirmed_signal = sig_streak >= confirm_bars ? filtered_signal : 0
+
+atr14   = ta.atr(14)
+sl_dist = sl_mode == "ATR" ? atr14 * sl_atr_mult : sl_fixed_pts
+tp_dist = sl_dist * rr_ratio
+
+var float entry_price   = na
+var float sl_price      = na
+var float tp_price      = na
+var int   trade_dir     = 0
+var int   exit_dir      = 0   // saves direction on the bar a trade closes
+var int   bars_in_trade = 0
+var float cum_pnl_pts   = 0.0
+var float cum_dollar    = 0.0
+var int   total_trades  = 0
+var int   win_trades    = 0
+var float max_win_pts   = 0.0
+var float max_loss_pts  = 0.0
+var float open_pnl_pts  = 0.0
+
+bars_in_trade := trade_dir != 0 ? bars_in_trade + 1 : 0
+exit_dir      := 0   // reset each bar; set below when a trade closes
+
+long_entry  = trade_dir == 0 and confirmed_signal ==  1
+short_entry = trade_dir == 0 and confirmed_signal == -1
+can_exit    = bars_in_trade >= min_hold
+sl_hit      = trade_dir ==  1 ? low  <= sl_price : trade_dir == -1 ? high >= sl_price : false
+tp_hit      = trade_dir ==  1 ? high >= tp_price : trade_dir == -1 ? low  <= tp_price : false
+exit_signal = confirmed_signal != 0 and confirmed_signal == -trade_dir
+exit_trade  = trade_dir != 0 and can_exit and (exit_signal or sl_hit or tp_hit)
+
+var label entry_lbl = na
+
+if long_entry
+    entry_price   := close
+    sl_price      := close - sl_dist
+    tp_price      := close + tp_dist
+    trade_dir     := 1
+    bars_in_trade := 0
+    if show_levels
+        _txt = "TP  " + str.tostring(math.round(close + tp_dist, 2), "#.##") +
+               "  (+" + str.tostring(math.round(tp_dist, 1), "#.#") + ")\n" +
+               "IN  " + str.tostring(math.round(close, 2), "#.##") + "\n" +
+               "SL  " + str.tostring(math.round(close - sl_dist, 2), "#.##") +
+               "  (-" + str.tostring(math.round(sl_dist, 1), "#.#") + ")"
+        entry_lbl := label.new(bar_index, low - atr14 * 0.3, _txt,
+             color=color.new(color.lime, 10), textcolor=color.white,
+             style=label.style_label_up, size=size.small)
+
+if short_entry
+    entry_price   := close
+    sl_price      := close + sl_dist
+    tp_price      := close - tp_dist
+    trade_dir     := -1
+    bars_in_trade := 0
+    if show_levels
+        _txt = "SL  " + str.tostring(math.round(close + sl_dist, 2), "#.##") +
+               "  (+" + str.tostring(math.round(sl_dist, 1), "#.#") + ")\n" +
+               "IN  " + str.tostring(math.round(close, 2), "#.##") + "\n" +
+               "TP  " + str.tostring(math.round(close - tp_dist, 2), "#.##") +
+               "  (-" + str.tostring(math.round(tp_dist, 1), "#.#") + ")"
+        entry_lbl := label.new(bar_index, high + atr14 * 0.3, _txt,
+             color=color.new(color.red, 10), textcolor=color.white,
+             style=label.style_label_down, size=size.small)
+
+if exit_trade
+    exit_dir     := trade_dir   // snapshot before clearing
+    trade_pts    = (close - entry_price) * trade_dir
+    cum_pnl_pts  := cum_pnl_pts + trade_pts
+    cum_dollar   := cum_dollar + (trade_pts / mnq_tick) * mnq_dpt
+    total_trades := total_trades + 1
+    if trade_pts > 0
+        win_trades := win_trades + 1
+    if trade_pts > max_win_pts
+        max_win_pts := trade_pts
+    if trade_pts < max_loss_pts
+        max_loss_pts := trade_pts
+    // Update entry label with trade outcome
+    if show_levels and not na(entry_lbl)
+        _outcome_hdr = tp_hit ? "[ v TP HIT ]" : sl_hit ? "[ x SL STOP ]" : "[ EXIT ]"
+        _ep = str.tostring(math.round(entry_price, 2), "#.##")
+        _sl = str.tostring(math.round(sl_price, 2), "#.##")
+        _tp = str.tostring(math.round(tp_price, 2), "#.##")
+        _sd = str.tostring(math.round(sl_dist, 1), "#.#")
+        _td = str.tostring(math.round(tp_dist, 1), "#.#")
+        if trade_dir == 1
+            label.set_text(entry_lbl,
+                 _outcome_hdr + "\n" +
+                 "TP  " + _tp + "  (+" + _td + ")\n" +
+                 "IN  " + _ep + "\n" +
+                 "SL  " + _sl + "  (-" + _sd + ")")
+        else
+            label.set_text(entry_lbl,
+                 _outcome_hdr + "\n" +
+                 "SL  " + _sl + "  (+" + _sd + ")\n" +
+                 "IN  " + _ep + "\n" +
+                 "TP  " + _tp + "  (-" + _td + ")")
+        label.set_color(entry_lbl,
+             tp_hit ? color.new(color.lime,  10) :
+             sl_hit ? color.new(color.red,   10) :
+                      color.new(color.gray,  20))
+        entry_lbl := na
+    entry_price   := na
+    sl_price      := na
+    tp_price      := na
+    trade_dir     := 0
+    bars_in_trade := 0
+
+open_pnl_pts := not na(entry_price) ? (close - entry_price) * trade_dir : 0.0
+win_rate      = total_trades > 0 ? (win_trades / total_trades) * 100 : 0.0
+
+bgcolor(show_regime and momentum_regime     ? color.new(color.red,  92) :
+        show_regime and not momentum_regime ? color.new(color.teal, 92) : na,
+        title="Regime Background")
+bgcolor(trade_dir ==  1 ? color.new(color.lime, 95) :
+        trade_dir == -1 ? color.new(color.red,  95) : na,
+        title="Active Trade Background")
+
+plotshape(show_trades and long_entry,
+     title="Long Entry", style=shape.triangleup,
+     location=location.belowbar, color=color.lime,
+     size=size.normal, text="L", textcolor=color.black)
+plotshape(show_trades and short_entry,
+     title="Short Entry", style=shape.triangledown,
+     location=location.abovebar, color=color.red,
+     size=size.normal, text="S", textcolor=color.white)
+plotshape(show_trades and exit_trade and exit_dir == 1,
+     title="Exit Long", style=shape.xcross,
+     location=location.abovebar, color=color.yellow, size=size.small)
+plotshape(show_trades and exit_trade and exit_dir == -1,
+     title="Exit Short", style=shape.xcross,
+     location=location.belowbar, color=color.yellow, size=size.small)
+
+var line sl_line    = na
+var line tp_line    = na
+var line entry_line = na
+
+if not na(entry_price) and show_levels
+    if long_entry or short_entry
+        line.delete(sl_line)
+        line.delete(tp_line)
+        line.delete(entry_line)
+        entry_line := line.new(bar_index, entry_price, bar_index+1, entry_price,
+             color=color.white, style=line.style_dotted, width=1, extend=extend.right)
+        sl_line    := line.new(bar_index, sl_price, bar_index+1, sl_price,
+             color=color.red, style=line.style_dashed, width=2, extend=extend.right)
+        tp_line    := line.new(bar_index, tp_price, bar_index+1, tp_price,
+             color=color.lime, style=line.style_dashed, width=2, extend=extend.right)
+
+if exit_trade and show_levels
+    line.delete(sl_line)
+    line.delete(tp_line)
+    line.delete(entry_line)
+
+plot(show_betas ? b1 : na, title="b1 ES",  color=color.yellow, linewidth=1)
+plot(show_betas ? b2 : na, title="b2 YM",  color=color.purple, linewidth=1)
+plot(show_betas ? b3 : na, title="b3 RTY", color=color.aqua,   linewidth=1)
+plot(show_betas ? b4 : na, title="b4 ZN",  color=color.silver, linewidth=1)
+plot(show_betas ? b5 : na, title="b5 GC",  color=color.orange, linewidth=1)
+
+var table stats = table.new(position.top_right, 2, 17,
+  border_color=color.gray, border_width=1, bgcolor=color.new(color.black, 60))
+
+if barstate.islast
+    table.cell(stats,0,0,  "MNQ FACTOR MODEL", text_color=color.gray,  text_size=size.small, bgcolor=color.new(color.navy,50))
+    table.cell(stats,1,0,  "MIT 2010",          text_color=color.gray,  text_size=size.small, bgcolor=color.new(color.navy,50))
+    table.cell(stats,0,1,  "Regime",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,1,  momentum_regime ? "MOMENTUM" : "MEAN REV",
+               text_color=momentum_regime ? color.red : color.lime, text_size=size.small)
+    table.cell(stats,0,2,  "Signal",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,2,  confirmed_signal>0 ? "LONG" : confirmed_signal<0 ? "SHORT" : "FLAT",
+               text_color=confirmed_signal>0 ? color.lime : confirmed_signal<0 ? color.red : color.gray,
+               text_size=size.small)
+    table.cell(stats,0,3,  "Disloc",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,3,  str.tostring(math.round(disloc_pts,1)) + " pts",
+               text_color=dislocation>0 ? color.red : color.lime, text_size=size.small)
+    table.cell(stats,0,4,  "sigma_D",           text_color=color.white, text_size=size.small)
+    table.cell(stats,1,4,  str.tostring(sigma_D,"#.######"), text_color=color.blue, text_size=size.small)
+    table.cell(stats,0,5,  "E_H",               text_color=color.white, text_size=size.small)
+    table.cell(stats,1,5,  str.tostring(E_H,"#.######"),    text_color=color.orange, text_size=size.small)
+    table.cell(stats,0,6,  "b1 ES",             text_color=color.white, text_size=size.small)
+    table.cell(stats,1,6,  str.tostring(b1,"#.###"), text_color=color.yellow, text_size=size.small)
+    table.cell(stats,0,7,  "b4 ZN (rates)",     text_color=color.white, text_size=size.small)
+    table.cell(stats,1,7,  str.tostring(b4,"#.###"), text_color=color.silver, text_size=size.small)
+    table.cell(stats,0,8,  "ATR(14)",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,8,  str.tostring(math.round(atr14,1)) + " pts", text_color=color.white, text_size=size.small)
+    table.cell(stats,0,9,  "SL Dist",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,9,  str.tostring(math.round(sl_dist,1)) + " pts", text_color=color.red, text_size=size.small)
+    table.cell(stats,0,10, "TP Dist",            text_color=color.white, text_size=size.small)
+    table.cell(stats,1,10, str.tostring(math.round(tp_dist,1)) + " pts", text_color=color.lime, text_size=size.small)
+    table.cell(stats,0,11, "── TRADES ──",       text_color=color.gray, text_size=size.small, bgcolor=color.new(color.navy,70))
+    table.cell(stats,1,11, "── P&L ──",          text_color=color.gray, text_size=size.small, bgcolor=color.new(color.navy,70))
+    table.cell(stats,0,12, "Total",              text_color=color.white, text_size=size.small)
+    table.cell(stats,1,12, str.tostring(total_trades), text_color=color.white, text_size=size.small)
+    table.cell(stats,0,13, "Win Rate",           text_color=color.white, text_size=size.small)
+    table.cell(stats,1,13, str.tostring(math.round(win_rate,1)) + "%",
+               text_color=win_rate>=50 ? color.lime : color.red, text_size=size.small)
+    table.cell(stats,0,14, "Cum P&L ($)",        text_color=color.white, text_size=size.small)
+    table.cell(stats,1,14, "$" + str.tostring(math.round(cum_dollar,0)),
+               text_color=cum_dollar>=0 ? color.lime : color.red, text_size=size.small)
+    table.cell(stats,0,15, "Open P&L",           text_color=color.white, text_size=size.small)
+    table.cell(stats,1,15, str.tostring(math.round(open_pnl_pts,2)) + " pts",
+               text_color=open_pnl_pts>=0 ? color.lime : color.red, text_size=size.small)
+    table.cell(stats,0,16, "Best / Worst",       text_color=color.white, text_size=size.small)
+    table.cell(stats,1,16, str.tostring(math.round(max_win_pts,2)) + " / " + str.tostring(math.round(max_loss_pts,2)),
+               text_color=color.white, text_size=size.small)
