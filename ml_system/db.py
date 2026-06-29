@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     lstm_dir    INTEGER,        -- -1 / 0 / 1
     lstm_conf   REAL,           -- 0..1
     ensemble    REAL,           -- weighted combination
+    signal_text TEXT,           -- 'LONG' | 'SHORT' | 'NEUTRAL'
     grade       TEXT,           -- expected candle grade
     fired       INTEGER DEFAULT 0  -- 1 once bar is known
 );
@@ -134,7 +135,27 @@ def init_db():
     except Exception:
         pass  # DELETE mode is fine for single-user use
 
+    # Migrations: add columns that may be missing from older DB versions
+    _migrate(DB_PATH)
+
     log.info(f"Database initialised at {DB_PATH}")
+
+
+def _migrate(db_path: str):
+    """Apply any schema migrations needed for older DB versions."""
+    migrations = [
+        "ALTER TABLE predictions ADD COLUMN signal_text TEXT",
+    ]
+    conn = sqlite3.connect(db_path)
+    try:
+        for sql in migrations:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists — safe to ignore
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ── Candle helpers ─────────────────────────────────────────────────────────
