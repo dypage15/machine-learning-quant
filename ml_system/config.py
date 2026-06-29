@@ -77,23 +77,35 @@ GRADE_THRESHOLDS = [0.80, 0.65, 0.50, 0.35, 0.20]  # A B C D E → else F
 
 # ── Feature list (order matters for model inputs) ─────────────────────────
 FEATURE_COLS = [
-    "pca_zscore",       # PCA dislocation z-score
-    "atr_ratio",        # candle range / ATR14
-    "body_ratio",       # abs(close-open) / range
-    "upper_wick",       # upper wick / range
-    "lower_wick",       # lower wick / range
-    "log_ret_mnq",      # MNQ log return
-    "log_ret_es",       # ES log return
-    "log_ret_ym",       # YM log return
-    "log_ret_zn",       # ZN log return
+    # ── PCA signal ───────────────────────────────────────────────────────
+    "pca_zscore",       # PCA dislocation z-score (vs rolling sigma)
+    "pca_cs",           # PCA confirmed signal: -1 / 0 / +1  ← core MIT signal
+    # ── Factor log returns (all 5 factors) ──────────────────────────────
+    "log_ret_mnq",      # MNQ 1-bar log return
+    "log_ret_es",       # ES  1-bar log return
+    "log_ret_ym",       # YM  1-bar log return
+    "log_ret_zn",       # ZN  1-bar log return (bonds — risk-off indicator)
+    "log_ret_rty",      # RTY 1-bar log return (small-cap risk proxy)
+    "log_ret_gc",       # GC  1-bar log return (gold — safe haven)
+    # ── Rolling beta & trend ─────────────────────────────────────────────
+    "beta_es",          # rolling 10-bar beta to ES
+    "trend_align",      # sign(close - EMA20): -1 / 0 / +1
+    # ── Candle structure ─────────────────────────────────────────────────
+    "atr_ratio",        # candle range / ATR14 (volatility normalised)
+    "body_ratio",       # abs(close-open) / range (conviction)
+    "upper_wick",       # upper wick fraction
+    "lower_wick",       # lower wick fraction
+    # ── Momentum / mean-reversion ────────────────────────────────────────
     "rsi14",            # RSI-14 (0–1 normalised)
-    "bb_pos",           # Bollinger Band position (0–1)
+    "bb_pos",           # Bollinger Band position (0=lower band, 1=upper)
+    # ── Volume ───────────────────────────────────────────────────────────
     "vol_ratio",        # volume / 20-bar avg volume
+    # ── Candle quality composite ─────────────────────────────────────────
+    "grade_score",      # composite grade 0–1 (A=~0.9 … F=~0.1)
+    # ── Session timing ───────────────────────────────────────────────────
     "hour_sin",         # hour of day sin
     "hour_cos",         # hour of day cos
     "dow_sin",          # day of week sin
     "dow_cos",          # day of week cos
-    "beta_es",          # rolling 10-bar beta to ES
-    "trend_align",      # sign(close - EMA20)
 ]
-N_FEATURES = len(FEATURE_COLS)
+N_FEATURES = len(FEATURE_COLS)   # 22

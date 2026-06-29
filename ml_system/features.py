@@ -208,27 +208,39 @@ def build_features(candle_data: dict, factor_closes: dict) -> list[dict]:
 
     rows = []
     for i, ts in enumerate(common):
+        _zeros = [0.0] * len(common)
         row = dict(
             ts          = ts,
+            # PCA signal
             pca_zscore  = float(zscore[i]),
+            pca_cs      = int(cs[i]),           # confirmed signal: -1 / 0 / +1
+            # Factor returns (all 5)
+            log_ret_mnq = float(r_mnq[i]),
+            log_ret_es  = float(factor_ret.get("ES",  _zeros)[i]),
+            log_ret_ym  = float(factor_ret.get("YM",  _zeros)[i]),
+            log_ret_zn  = float(factor_ret.get("ZN",  _zeros)[i]),
+            log_ret_rty = float(factor_ret.get("RTY", _zeros)[i]),
+            log_ret_gc  = float(factor_ret.get("GC",  _zeros)[i]),
+            # Rolling beta & trend
+            beta_es     = float(beta_es[i]),
+            trend_align = float(trend_align[i]),
+            # Candle structure
             atr_ratio   = float(np.clip(atr_ratio[i], 0, 5)),
             body_ratio  = float(body_ratio[i]),
             upper_wick  = float(upper_r[i]),
             lower_wick  = float(lower_r[i]),
-            log_ret_mnq = float(r_mnq[i]),
-            log_ret_es  = float(factor_ret.get("ES",  [0]*len(common))[i]),
-            log_ret_ym  = float(factor_ret.get("YM",  [0]*len(common))[i]),
-            log_ret_zn  = float(factor_ret.get("ZN",  [0]*len(common))[i]),
+            # Momentum / mean-reversion
             rsi14       = float(rsi14[i]),
             bb_pos      = float(bb_pos[i]),
+            # Volume
             vol_ratio   = float(np.clip(vol_ratio[i], 0, 5)),
+            # grade_score added after grade_all() runs
+            # Session timing
             hour_sin    = float(hour_sin[i]),
             hour_cos    = float(hour_cos[i]),
             dow_sin     = float(dow_sin[i]),
             dow_cos     = float(dow_cos[i]),
-            beta_es     = float(beta_es[i]),
-            trend_align = float(trend_align[i]),
-            # extras for grader
+            # Private fields used by grader (not stored as ML features)
             _cs         = int(cs[i]),
             _atr14      = float(atr14[i]),
             _close      = float(mnq_c[i]),

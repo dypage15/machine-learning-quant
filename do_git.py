@@ -22,7 +22,7 @@ rc, o = run(["git", "-C", REPO, "add", "-A"])
 lines.append(f"add: {o}")
 
 rc, o = run(["git", "-C", REPO, "commit", "-m",
-             "Fix: add signal_text column to predictions table + migration"])
+             "Feat: 22-feature model (pca_cs, RTY, GC, grade_score); cyberpunk dashboard; MFE/MAE"])
 lines.append(f"commit: {o}")
 
 rc, o = run(["git", "-C", REPO, "push", "origin", "main"])

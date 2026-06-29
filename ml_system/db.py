@@ -29,25 +29,28 @@ CREATE TABLE IF NOT EXISTS features (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          INTEGER NOT NULL UNIQUE,    -- MNQ bar timestamp
     pca_zscore  REAL,
-    atr_ratio   REAL,
-    body_ratio  REAL,
-    upper_wick  REAL,
-    lower_wick  REAL,
+    pca_cs      INTEGER,                   -- PCA confirmed signal -1/0/+1
     log_ret_mnq REAL,
     log_ret_es  REAL,
     log_ret_ym  REAL,
     log_ret_zn  REAL,
+    log_ret_rty REAL,
+    log_ret_gc  REAL,
+    beta_es     REAL,
+    trend_align REAL,
+    atr_ratio   REAL,
+    body_ratio  REAL,
+    upper_wick  REAL,
+    lower_wick  REAL,
     rsi14       REAL,
     bb_pos      REAL,
     vol_ratio   REAL,
+    grade_score  REAL,
     hour_sin    REAL,
     hour_cos    REAL,
     dow_sin     REAL,
     dow_cos     REAL,
-    beta_es     REAL,
-    trend_align REAL,
-    candle_grade TEXT,   -- A B C D E F
-    grade_score  REAL
+    candle_grade TEXT    -- A B C D E F  (not a model feature — stored for display)
 );
 
 CREATE TABLE IF NOT EXISTS trade_results (
@@ -62,6 +65,8 @@ CREATE TABLE IF NOT EXISTS trade_results (
     exit_reason     TEXT,       -- 'TP' | 'SL' | 'MH' | 'EOD'
     pnl             REAL,
     bars_held       INTEGER,
+    mfe             REAL,       -- Max Favorable Excursion (pts, always positive)
+    mae             REAL,       -- Max Adverse Excursion  (pts, always positive)
     pca_zscore_entry REAL,
     candle_grade    TEXT,
     lorentzian_vote REAL,       -- -1..1 at entry
@@ -145,6 +150,12 @@ def _migrate(db_path: str):
     """Apply any schema migrations needed for older DB versions."""
     migrations = [
         "ALTER TABLE predictions ADD COLUMN signal_text TEXT",
+        "ALTER TABLE trade_results ADD COLUMN mfe REAL",
+        "ALTER TABLE trade_results ADD COLUMN mae REAL",
+        # feature table expansions
+        "ALTER TABLE features ADD COLUMN pca_cs INTEGER",
+        "ALTER TABLE features ADD COLUMN log_ret_rty REAL",
+        "ALTER TABLE features ADD COLUMN log_ret_gc REAL",
     ]
     conn = sqlite3.connect(db_path)
     try:
@@ -183,7 +194,8 @@ def get_candles(symbol: str, limit: int = 2000) -> list[dict]:
 
 # ── Feature helpers ────────────────────────────────────────────────────────
 def upsert_features(rows: list[dict]):
-    cols = ["ts"] + FEATURE_COLS + ["candle_grade", "grade_score"]
+    # FEATURE_COLS now includes grade_score; candle_grade stored separately
+    cols = ["ts"] + FEATURE_COLS + ["candle_grade"]
     placeholders = ", ".join(f":{c}" for c in cols)
     col_str = ", ".join(cols)
     sql = f"INSERT OR REPLACE INTO features ({col_str}) VALUES ({placeholders})"
@@ -210,15 +222,64 @@ def insert_trade(trade: dict) -> int:
 
 
 def close_trade(trade_id: int, exit_ts: int, exit_price: float,
-                exit_reason: str, pnl: float, bars_held: int):
+                exit_reason: str, pnl: float, bars_held: int,
+                mfe: float = None, mae: float = None):
+    """
+    Finalise a trade.
+    mfe: Max Favorable Excursion in points (always positive).
+    mae: Max Adverse Excursion in points (always positive).
+    If mfe/mae were tracked bar-by-bar via update_trade_excursions(),
+    omit them here and they will retain those values.
+    """
     outcome = 1 if pnl > 0 else 0
+    with get_conn() as conn:
+        if mfe is not None or mae is not None:
+            conn.execute("""
+                UPDATE trade_results
+                   SET exit_ts=?, exit_price=?, exit_reason=?,
+                       pnl=?, bars_held=?, actual_outcome=?,
+                       mfe=COALESCE(?, mfe), mae=COALESCE(?, mae)
+                 WHERE id=?
+            """, (exit_ts, exit_price, exit_reason, pnl, bars_held, outcome,
+                  mfe, mae, trade_id))
+        else:
+            conn.execute("""
+                UPDATE trade_results
+                   SET exit_ts=?, exit_price=?, exit_reason=?,
+                       pnl=?, bars_held=?, actual_outcome=?
+                 WHERE id=?
+            """, (exit_ts, exit_price, exit_reason, pnl, bars_held, outcome, trade_id))
+
+
+def update_trade_excursions(trade_id: int, bar_high: float, bar_low: float,
+                             entry_price: float, direction: int):
+    """
+    Call once per bar while a trade is open.
+    Updates mfe/mae using running-max logic so you never need to keep state
+    outside the DB.
+
+    direction : 1 for LONG, -1 for SHORT
+    bar_high  : bar's high price
+    bar_low   : bar's low price
+    entry_price: trade entry price
+
+    For LONG:  favorable = high above entry, adverse = low below entry
+    For SHORT: favorable = low below entry,  adverse = high above entry
+    """
+    if direction == 1:
+        fav = max(bar_high - entry_price, 0.0)
+        adv = max(entry_price - bar_low,  0.0)
+    else:
+        fav = max(entry_price - bar_low,  0.0)
+        adv = max(bar_high - entry_price, 0.0)
+
     with get_conn() as conn:
         conn.execute("""
             UPDATE trade_results
-               SET exit_ts=?, exit_price=?, exit_reason=?,
-                   pnl=?, bars_held=?, actual_outcome=?
+               SET mfe = CASE WHEN mfe IS NULL OR ? > mfe THEN ? ELSE mfe END,
+                   mae = CASE WHEN mae IS NULL OR ? > mae THEN ? ELSE mae END
              WHERE id=?
-        """, (exit_ts, exit_price, exit_reason, pnl, bars_held, outcome, trade_id))
+        """, (fav, fav, adv, adv, trade_id))
 
 
 def get_trades(limit: int = 1000) -> list[dict]:

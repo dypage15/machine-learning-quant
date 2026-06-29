@@ -7,7 +7,8 @@ from datetime import datetime
 
 from .config import PRED_FILE, LSTM_MIN_ROWS, FEATURE_COLS, PCA_H, PCA_RL
 from .db     import (init_db, upsert_candles, upsert_features, get_candles,
-                     get_features, insert_prediction, log_model_run, get_stats)
+                     get_features, insert_prediction, log_model_run, get_stats,
+                     insert_trade, close_trade, update_trade_excursions)
 from .features import build_features, normalise_features, _log_ret, _atr14
 from .grader   import grade_all
 from .lorentzian import LorentzianClassifier, build_labels

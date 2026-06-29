@@ -1,10 +1,10 @@
-add: warning: in the working copy of 'do_git.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'ml_system/db.py', LF will be replaced by CRLF the next time Git touches it
-commit: [main 59ea1bf] Fix: add signal_text column to predictions table + migration
- 3 files changed, 36 insertions(+), 39 deletions(-)
- create mode 100644 git_log.txt
+add: warning: in the working copy of 'copy_log.py', LF will be replaced by CRLF the next time Git touches it
+commit: [main 8fc992f] Fix: add signal_text column to predictions table + migration
+ 2 files changed, 36 insertions(+), 5 deletions(-)
+ create mode 100644 copy_log.py
 push exit=0: To https://github.com/dypage15/machine-learning-quant.git
-   a1e2ebd..59ea1bf  main -> main
+   59ea1bf..8fc992f  main -> main
 log:
+8fc992f Fix: add signal_text column to predictions table + migration
 59ea1bf Fix: add signal_text column to predictions table + migration
 a1e2ebd PCA MNQ ML system: pipeline, Lorentzian+LSTM models, bars import

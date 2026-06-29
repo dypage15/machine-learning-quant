@@ -50,11 +50,11 @@ class _LinearFallback:
     def __init__(self):
         from sklearn.linear_model import SGDClassifier
         self.model = SGDClassifier(loss="log_loss", max_iter=1, warm_start=True,
-                                   class_weight="balanced", random_state=42)
+                                   random_state=42)
         self.fitted = False
 
     def partial_fit(self, X, y):
-        classes = np.array([-1, 0, 1])
+        classes = np.array([0, 1, 2])  # LABEL_MAP mapped values: 0=short, 1=neutral, 2=long
         self.model.partial_fit(X, y, classes=classes)
         self.fitted = True
 
@@ -230,13 +230,24 @@ class LSTMPredictor:
         if not os.path.exists(path):
             return False
         if TORCH_OK:
-            ckpt = torch.load(path, map_location="cpu")
-            self.net.load_state_dict(ckpt["state_dict"])
-            self.history = ckpt.get("history", self.history)
+            try:
+                ckpt = torch.load(path, map_location="cpu")
+                self.net.load_state_dict(ckpt["state_dict"])
+                self.history = ckpt.get("history", self.history)
+                log.info(f"LSTM loaded ← {path}")
+            except (RuntimeError, Exception) as e:
+                # Shape mismatch (e.g. N_FEATURES changed) — start fresh
+                log.warning(f"LSTM checkpoint incompatible ({e}), starting fresh")
+                self._build()
+                return False
         else:
             import pickle
-            with open(path, "rb") as f:
-                self.net.model = pickle.load(f)
-            self.net.fitted = True
-        log.info(f"LSTM loaded ← {path}")
+            try:
+                with open(path, "rb") as f:
+                    self.net.model = pickle.load(f)
+                self.net.fitted = True
+                log.info(f"LSTM loaded ← {path}")
+            except Exception as e:
+                log.warning(f"LSTM linear checkpoint failed ({e}), starting fresh")
+                return False
         return True

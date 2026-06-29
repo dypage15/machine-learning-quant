@@ -8,3 +8,4 @@ last_predictions.json
 *.db
 *.log
 .DS_Store
+launch.bat
